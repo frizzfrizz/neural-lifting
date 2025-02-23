@@ -4,7 +4,7 @@ from pathlib import Path
 
 class ClusterConfig:
     def __init__(self):
-        self.USER = os.getenv('USER', 'mswaroop')
+        self.USER = os.getenv('USER')
         self.BASE_DIR = Path(f"/data/user_data/{self.USER}")
         
         # Project structure
