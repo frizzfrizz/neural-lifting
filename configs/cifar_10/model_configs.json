@@ -1,0 +1,58 @@
+{
+    "model_configs": {
+        "LeNetLifted": {
+            "type": "LeNetLifted",
+            "params": {
+                "trunk_config": {
+                    "in_channels": 3,
+                    "conv_channels": [6, 16],
+                    "conv_kernels": [5, 5],
+                    "strides": [1, 1],
+                    "paddings": [2, 2],
+                    "fc_layers": [60],
+                    "input_shape": [3,32,32],
+                    "latent_dim": 84,
+                    "activations": ["relu", "relu"],
+                    "pooling": true,
+                    "pooling_size": 2,
+                    "dropout": true,
+                    "dropout_rate": 0.41003508265236294,
+                    "is_final_layer": false
+                },
+                "head_config": {
+                    "fc_layers": [],
+                    "activations": [],
+                    "final_activation": ["softmax"],
+                    "num_classes": 10,
+                    "is_identity": false
+                },
+                "lifter_config": {
+                    "lifter_type": "Residual",
+                    "fc_layers": [1000],
+                    "activations": ["relu"],
+                    "init_type": "xavier",
+                    "scale": 1.0,
+                    "sparsity": 0.99,
+                    "is_final_layer": false
+                }
+            }
+        }
+    },
+    "training_params": {
+        "batch_size": 128,
+        "epochs": 1000,
+        "lr": 0.002,
+        "lr_shortcut": 0.060534484680010825,
+        "lr_lifted": 0.0016305687346221474,
+        "lr_matching": 0.0023102018878452934,
+        "weight_decay":  0.0001,
+        "n_folds": 1,
+        "test_size": 10000,
+        "early_stopping": true,
+        "patience": 12,
+        "gradient_clip": 3.7,
+        "cycles": 1,
+        "alpha": 0.2,
+        "max_epochs_per_phase": 50
+    }
+}

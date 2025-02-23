@@ -1,0 +1,20 @@
+**/__pycache__/**
+
+# Ignore all contents of the results folder
+results/*
+
+# ignore the virtual environment
+.venv/
+venv/
+
+# ignore the data directory
+datasets/*
+logs/*
+
+dsprites_repo/dsprites-dataset.zip/
+
+# ignore __pycache__ directories
+**/__pycache__/
+
+#  ignore the DS file
+*.DS_Store
