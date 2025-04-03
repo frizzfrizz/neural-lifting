@@ -27,7 +27,7 @@ def generate_cifar_dataset(save_path: str, train: bool = True, verbose: bool = T
         dataset = torchvision.datasets.CIFAR10(
             root=dataset_path,
             train=train,
-            download=False,
+            download=True,
             transform=transform
         )
         # Load test data

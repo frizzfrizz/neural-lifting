@@ -7,7 +7,8 @@ import torchvision
 import torchvision.transforms as transforms
 from torchvision.utils import make_grid
 
-
+import ssl # added lines
+ssl._create_default_https_context = ssl._create_unverified_context # added lines
 
 # Helper function to show images
 def show_images_grid(imgs_, num_images=25, save_path=None):

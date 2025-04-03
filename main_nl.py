@@ -13,12 +13,14 @@ from algo_2 import ModelTrainer
 from dir_names import *
 
 class ExperimentManager:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, models):
         self.args = args
         self.device = self._setup_device()
         self.configs = self._load_configs()
         self.timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.results_dir = self._setup_results_directory()
+        self.models = models
+        self.trainers = []
         
     def _setup_device(self):
         """Configure device(s) for training."""
@@ -49,8 +51,8 @@ class ExperimentManager:
         # For each model, ensure it has required config sections
         for model in self.args.models:
             if model not in configs['model_configs']:
-                if model == 'LeNetLifted' or model == 'lenetlifted':
-                    configs['model_configs'][model] = LeNetLifted()._get_default_config()
+                if model == 'RFLiftNet' or model == 'rfliftnet':
+                    configs['model_configs'][model] = RFLiftNet()._get_default_config()
                     
         # Ensure training params exist
         if 'training_params' not in configs:
@@ -124,13 +126,13 @@ class ExperimentManager:
         with open(os.path.join(self.results_dir, 'experiment_config.json'), 'w') as f:
             json.dump(config, f, indent=4)
     
-    def train_models(self, X: torch.Tensor, Y: torch.Tensor):
-        """Train all specified models."""
-        for model_type in self.args.models:
-            print(f"\nTraining Model {model_type}")
+    def init_model_trainers(self):
+        for i in range(len(self.models)):
+            model = self.models[i]
+            model_type = self.args.models[i]
             
             # Prepare model configuration
-            model_config = self.configs.get('model_configs', {}).get(model_type, LeNetLifted()._get_default_config())
+            model_config = self.configs.get('model_configs', {}).get(model_type, model._get_default_config())
             model_name = f'{model_type}_{self.timestamp}'                
             
             # Create trainer configuration
@@ -143,9 +145,17 @@ class ExperimentManager:
             }
             
             # Initialize and run trainer
-            trainer = ModelTrainer(trainer_config)
+            trainer = ModelTrainer(trainer_config, model)
+            self.trainers.append(trainer)
+
+    def train_models(self, X: torch.Tensor, Y: torch.Tensor):
+        """Train all specified models."""
+        # self.init_model_trainers()
+        for trainer in self.trainers:
+            print(f"\nTraining Model {trainer.config['model_type']}")
+            
             # Split into train and test if needed
-            if trainer_config.get('n_folds', 3) == 1:
+            if trainer.config.get('n_folds', 3) == 1:
                 # For CIFAR-10, test set is fixed
                 test_size = self.configs.get('training_params', {}).get('test_size', 10000)
                 X_train = X[:-test_size]
@@ -172,7 +182,7 @@ class ExperimentManager:
         if self.args.with_val:
             print(f"Validation metrics for {model_name}:")
             for fold, fold_metrics in metrics.items():
-                plot_metrics_v5(
+                plot_metrics(
                     metrics=fold_metrics,
                     save_path=os.path.join(self.results_dir, 'plots', f'metrics_{model_name}_fold_{fold}.png'),
                     show=False,
@@ -181,7 +191,7 @@ class ExperimentManager:
         else:
             print(f"Validation metrics for {model_name}:")
             for fold, fold_metrics in metrics.items():
-                plot_metrics_v5(
+                plot_metrics(
                     metrics=fold_metrics,
                     save_path=os.path.join(self.results_dir, 'plots', f'metrics_{model_name}_fold_{fold}.png'),
                     show=False,
@@ -197,7 +207,6 @@ class ExperimentManager:
             f.write(str(model))
         
 
-
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser()
@@ -207,7 +216,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--with_val', action='store_true')
     parser.add_argument('--dataset_size', type=int, default=60000)
-    parser.add_argument('--models', nargs='+', default=['LeNetLifted'])
+    parser.add_argument('--models', nargs='+', default=['RFLiftNet'])
     args = parser.parse_args()
     
     # Set random seeds for reproducibility
@@ -216,9 +225,12 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
     
+    # models
+    models = [RFLiftNet()]
+
     # Initialize experiment manager
-    experiment = ExperimentManager(args)
-    
+    experiment = ExperimentManager(args, models) # pass the models themselves here
+    print("experiment obj created")
     # Load and prepare data
     X, Y, label_distribution = experiment.load_and_prepare_data()
     
@@ -228,10 +240,12 @@ def main():
     # Save all the arguments
     with open(os.path.join(experiment.results_dir, 'args.json'), 'w') as f:
         json.dump(vars(args), f, indent=4)
-    
+    print("arguments saved")
+
     # Train models
     experiment.train_models(X, Y)
-    
+    print("training completed")
+
     print(f"\nExperiment completed. Results saved to: {experiment.results_dir}")
 
 if __name__ == '__main__':

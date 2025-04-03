@@ -1,6 +1,6 @@
 import os
 user_name = os.environ['USER']
-BASE_DIR = f"/data/user_data/{user_name}/neural-lifting"
+BASE_DIR = f"."
 DATASET_DIR = f"{BASE_DIR}/datasets/"
 RESULTS_DIR = f"{BASE_DIR}/results/"
 LOG_DIR = f"{BASE_DIR}/logs/"

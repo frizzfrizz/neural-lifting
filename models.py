@@ -9,6 +9,8 @@ import torch.nn.init as init
 from tqdm import tqdm
 from visualisers import plot_metrics
 from sklearn.model_selection import KFold
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.neighbors import KNeighborsRegressor
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import json
 import copy
@@ -602,7 +604,7 @@ class NeuralLiftNet(nn.Module, ABC):
         super(NeuralLiftNet, self).__init__()
         self.trunk = trunk if trunk else self._create_trunk()
         self.head = head if head else self._create_head()
-        self.lifter = lifter if lifter else self._create_lifter()
+        self.lifter = lifter if lifter else self._create_lifter() # see this
         self.lift = False
 
     @abstractmethod
@@ -620,6 +622,146 @@ class NeuralLiftNet(nn.Module, ABC):
     @abstractmethod
     def forward(self, x):
         pass
+
+    def enable_lift(self):
+        self.lift = True
+
+    def disable_lift(self):
+        self.lift = False
+
+class RFLiftNet(NeuralLiftNet):
+    def __init__(self, trunk = None, head = None, lifter = None, config = None):
+        super(NeuralLiftNet, self).__init__()
+        self.config = self._get_default_config() if config is None else config
+        self.trunk = trunk if trunk else self._create_trunk()
+        # self.head = head if head else self._create_head()
+        self.lifter = lifter if lifter else self._create_lifter() # see this
+        self.lift = False
+
+    def _get_default_config(self):
+        return {
+            'trunk_config': {
+                'in_channels': 3,
+                'conv_channels': [6, 16],
+                'conv_kernels': [3, 3],
+                'strides': [1, 1],
+                'paddings': [1, 1],
+                'fc_layers': [60],
+                'input_shape': (1, 64, 64),
+                'latent_dim': 84,
+                'activations': ['relu', 'relu'],
+                'dropout': True,
+                'pooling': True,
+                'pooling_size': 2,
+                'dropout_rate': 0.1
+            },
+            'lifter_config': {
+                'max_depth': 10,
+                'rand_state': 0,
+            }
+        }
+    
+    def _create_trunk(self):
+        trunk_config = self.config['trunk_config'] if 'trunk_config' in self.config else self.config['params']['trunk_config']
+        return Encoder(
+            trunk_config['input_shape'],
+            [trunk_config['conv_channels'], trunk_config['conv_kernels'], trunk_config['strides'], trunk_config['paddings']],
+            trunk_config['fc_layers'],
+            trunk_config['latent_dim'],
+            pooling=trunk_config['pooling'],
+            dropout=trunk_config['dropout'],
+            pooling_size=trunk_config['pooling_size'],
+            dropout_rate=trunk_config['dropout_rate']
+        )
+
+    def _create_head(self):
+        pass
+
+    def _create_lifter(self):
+        return RandomForestRegressor(max_depth=self.config['lifter_config']['max_depth'], 
+                                     random_state=self.config['lifter_config']['rand_state'])
+
+    def forward(self, x):
+        if self.lift:
+            # print('lifting')
+            z = self.trunk(x)
+            y = self.lifter(z) + z
+            return y
+        
+        # print('not lifting')
+        y = self.trunk(z)
+        return y
+
+
+    def enable_lift(self):
+        self.lift = True
+
+    def disable_lift(self):
+        self.lift = False
+
+class NearNeiLiftNet(NeuralLiftNet):
+    def __init__(self, trunk = None, head = None, lifter = None, config = None):
+        super(NeuralLiftNet, self).__init__()
+        self.config = self._get_default_config() if config is None else config
+        self.trunk = trunk if trunk else self._create_trunk()
+        # self.head = head if head else self._create_head()
+        self.lifter = lifter if lifter else self._create_lifter() # see this
+        self.lift = False
+
+    def _get_default_config(self):
+        return {
+            'trunk_config': {
+                'in_channels': 3,
+                'conv_channels': [6, 16],
+                'conv_kernels': [3, 3],
+                'strides': [1, 1],
+                'paddings': [1, 1],
+                'fc_layers': [60],
+                'input_shape': (1, 64, 64),
+                'latent_dim': 84,
+                'activations': ['relu', 'relu'],
+                'dropout': True,
+                'pooling': True,
+                'pooling_size': 2,
+                'dropout_rate': 0.1
+            },
+            'lifter_config': {
+                'n_neighbors': 5,
+                'weights': 'uniform',
+            }
+        }
+    
+    def _create_trunk(self):
+        trunk_config = self.config['trunk_config'] if 'trunk_config' in self.config else self.config['params']['trunk_config']
+        return Encoder(
+            trunk_config['input_shape'],
+            [trunk_config['conv_channels'], trunk_config['conv_kernels'], trunk_config['strides'], trunk_config['paddings']],
+            trunk_config['fc_layers'],
+            trunk_config['latent_dim'],
+            pooling=trunk_config['pooling'],
+            dropout=trunk_config['dropout'],
+            pooling_size=trunk_config['pooling_size'],
+            dropout_rate=trunk_config['dropout_rate']
+        )
+
+    def _create_head(self):
+        pass
+
+    def _create_lifter(self):
+        return KNeighborsRegressor(n_neighbors=self.config['lifter_config']['n_neighbors'], 
+                                     weights=self.config['lifter_config']['weights'])
+
+    def forward(self, x):
+        if self.lift:
+            # print('lifting')
+            z = self.trunk(x)
+            y = self.lifter(z) + z
+            return y
+        
+        # print('not lifting')
+        y = self.trunk(z)
+        return y
+
 
     def enable_lift(self):
         self.lift = True

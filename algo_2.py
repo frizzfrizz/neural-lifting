@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.model_selection import KFold
 from collections import defaultdict
 import json
-from models import LeNetLifted
+from models import RFLiftNet
 from tqdm import tqdm
 from dir_names import *
 from visualisers import plot_metrics
@@ -258,11 +258,11 @@ class MetricsTracker:
                 self.metrics[fold][key].append(value)
 
 class ModelTrainer:
-    def __init__(self, config):
+    def __init__(self, config, model):
         self.config = config
         self.metrics_tracker = MetricsTracker(config['n_folds'])
         self.device = setup_device()
-        self.model = None
+        self.model = model
         self.lifter_config = config['model_config']['params'].get('lifter_config', {}) if 'params' in config['model_config'] else config['model_config'].get('lifter_config', {})
     
     def get_model_module(self, model=None):
@@ -328,16 +328,17 @@ class ModelTrainer:
                 if param.grad is not None:
                     param.grad.data = param.grad.data.to(expected_device)
 
+    
     def _initialize_model(self, device):
         print(f"Initializing model with device: {device}")
         """Initialize model with proper device handling."""
-        if self.config['model_type'] == 'LeNetLifted':
+        if self.config['model_type'] == 'RFLiftNet':
             print(f'self.config: {self.config}')
             # Get the correct config structure
             model_config = self.config['model_config']['params'] if 'params' in self.config['model_config'] else self.config['model_config']
             print(f"Initialising model with Model config: {model_config}")
             # Create model
-            model = LeNetLifted(config=model_config)
+            model = RFLiftNet(config=model_config)
             # Initialize parameters before moving to device
             print(f'Initializing model with seed: {self.config["seed"]}')
             model._initialize_modules(seed=self.config['seed'], init_type=self.config.get('init_type', 'xavier'))
@@ -560,7 +561,10 @@ class ModelTrainer:
             val_loader = self._create_loader(X_val, y_val, self.config['batch_size'], device, shuffle=False)
             
             # Initialize model and training components
-            model = self._initialize_model(device)
+            if self.model == None:
+                model = self._initialize_model(device)
+            else:
+                model = self.model
             # model = setup_model(model, device)
             training_cycle = TrainingCycle(model, self.config)
             optimizer, scheduler = self._initialize_optimizer(model)
@@ -901,6 +905,7 @@ class ModelTrainer:
         # Initialize model and training components
         self.model = self._initialize_model(device)
         training_cycle = TrainingCycle(self.model, self.config)
+        print(f'DEBUG: model {self.model}')
         optimizer, scheduler = self._initialize_optimizer(self.model)
         
         cycle_counter = 0
