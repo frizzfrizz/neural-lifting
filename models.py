@@ -600,12 +600,17 @@ class ResidualSequential(nn.Module):
     
 ## Proposed Lifting Models
 class NeuralLiftNet(nn.Module, ABC):
-    def __init__(self, trunk = None, head = None, lifter = None):
+    def __init__(self, trunk = None, head = None, lifter = None, config = None):
         super(NeuralLiftNet, self).__init__()
+        self.config = config if config else self._get_default_config()
         self.trunk = trunk if trunk else self._create_trunk()
         self.head = head if head else self._create_head()
         self.lifter = lifter if lifter else self._create_lifter() # see this
         self.lift = False
+
+    @abstractmethod
+    def _get_default_config(self):
+        pass
 
     @abstractmethod
     def _create_trunk(self):
@@ -631,12 +636,12 @@ class NeuralLiftNet(nn.Module, ABC):
 
 class RFLiftNet(NeuralLiftNet):
     def __init__(self, trunk = None, head = None, lifter = None, config = None):
-        super(NeuralLiftNet, self).__init__()
-        self.config = self._get_default_config() if config is None else config
-        self.trunk = trunk if trunk else self._create_trunk()
-        # self.head = head if head else self._create_head()
-        self.lifter = lifter if lifter else self._create_lifter() # see this
-        self.lift = False
+        super(RFLiftNet, self).__init__(None, None, None, config)
+        # self.trunk = trunk if trunk else self._create_trunk()
+        # self.head = None
+        # self.lifter = lifter if lifter else self._create_lifter() # see this
+        # self.lift = False
+
 
     def _get_default_config(self):
         return {
@@ -647,7 +652,7 @@ class RFLiftNet(NeuralLiftNet):
                 'strides': [1, 1],
                 'paddings': [1, 1],
                 'fc_layers': [60],
-                'input_shape': (1, 64, 64),
+                'input_shape': (3, 32, 32),
                 'latent_dim': 84,
                 'activations': ['relu', 'relu'],
                 'dropout': True,
@@ -675,22 +680,22 @@ class RFLiftNet(NeuralLiftNet):
         )
 
     def _create_head(self):
-        pass
+        return None
 
     def _create_lifter(self):
         return RandomForestRegressor(max_depth=self.config['lifter_config']['max_depth'], 
                                      random_state=self.config['lifter_config']['rand_state'])
 
     def forward(self, x):
+        z = self.trunk(x)
         if self.lift:
             # print('lifting')
-            z = self.trunk(x)
             y = self.lifter(z) + z
-            return y
+            return y, z
         
         # print('not lifting')
-        y = self.trunk(z)
-        return y
+        y = z
+        return y, z
 
 
     def enable_lift(self):
@@ -717,7 +722,7 @@ class NearNeiLiftNet(NeuralLiftNet):
                 'strides': [1, 1],
                 'paddings': [1, 1],
                 'fc_layers': [60],
-                'input_shape': (1, 64, 64),
+                'input_shape': (3, 32, 32),
                 'latent_dim': 84,
                 'activations': ['relu', 'relu'],
                 'dropout': True,
@@ -759,7 +764,7 @@ class NearNeiLiftNet(NeuralLiftNet):
             return y
         
         # print('not lifting')
-        y = self.trunk(z)
+        y = self.trunk(x)
         return y
 
 

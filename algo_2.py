@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.model_selection import KFold
 from collections import defaultdict
 import json
-from models import RFLiftNet
+from models import RFLiftNet, LeNetLifted
 from tqdm import tqdm
 from dir_names import *
 from visualisers import plot_metrics
@@ -201,27 +201,94 @@ class TrainingCycle:
         self.patience_counter = 0
         self.best_val_loss = float('inf')
         self.matching_steps = 0
-        
-    def compute_loss(self, y_pred, y_batch, z, target_z, alpha=0.5):
-        """Phase-specific loss computation."""
-        if self.current_phase == TrainingPhase.MATCHING:
-            match_loss = F.mse_loss(z, target_z)
-            # with torch.no_grad():
-            #     ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
-            ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
-            alpha = self.config.get('alpha', 0.5)
-            return alpha * match_loss + (1.0-alpha) * ce_loss, ce_loss, match_loss
-            # return match_loss, ce_loss, match_loss
-            
-        elif self.current_phase in [TrainingPhase.SHORTCUT, TrainingPhase.LIFTED]:
-            # bce_loss = F.binary_cross_entropy(y_pred[:, 1], y_batch[:, 1])
-            ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
-            with torch.no_grad():
-                match_loss = F.mse_loss(z, target_z)
-            # return bce_loss, bce_loss, match_loss
-            return ce_loss, ce_loss, match_loss
 
-        raise ValueError(f"Unknown phase: {self.current_phase}")
+def switch_to_next_phase_RF(self):
+        """Switch to next training phase."""
+        self.phase_epoch_counter = 0
+        old_phase = self.current_phase
+        model_module = self.get_model_module()
+        device = next(self.model.parameters()).device
+        
+        if self.current_phase == TrainingPhase.SHORTCUT:
+            # with torch.no_grad():
+            #     self.store_trunk_params(model_module)
+            self.current_phase = TrainingPhase.LIFTED
+            model_module.lift = True
+           
+            model_module.lifter = model_module.lifter.to(device)
+            
+            for param in self.model.parameters():
+                param.requires_grad = True
+            
+            for param in self.model.trunk.parameters():
+                param.requires_grad = True
+                
+        elif self.current_phase == TrainingPhase.LIFTED:
+            self.current_phase = TrainingPhase.MATCHING
+            model_module.lift = False
+            # model_module.trunk.load_state_dict(self.stored_trunk_params)
+            
+            for param in model_module.lifter.parameters():
+                param.requires_grad = False
+            for param in model_module.head.parameters():
+                param.requires_grad = False
+                # param.requires_grad = True
+            for param in model_module.trunk.parameters():
+                param.requires_grad = True
+                
+        else:  # MATCHING to LIFTED NOW
+            # with torch.no_grad():
+            #     self.store_trunk_params(model_module) # ask why is this not 
+            self.current_phase = TrainingPhase.LIFTED
+            model_module.lift = True
+            model_module._initialize_lifter(
+                init_type=self.lifter_config.get('init_type', 'kaiming'),
+                sparsity=self.lifter_config.get('sparsity', 0.0),
+                scale=self.lifter_config.get('scale', None)
+            )
+            model_module.lifter = model_module.lifter.to(device)
+            
+            for param in self.model.parameters():
+                param.requires_grad = True
+            
+            for param in self.model.lifter.parameters():
+                param.requires_grad = True
+            for param in self.model.head.parameters():
+                param.requires_grad = True
+            for param in self.model.trunk.parameters():
+                param.requires_grad = True
+
+        print(f"\n\tPhase switch: {old_phase} -> {self.current_phase}")
+        print(f"\tModel lift enabled: {model_module.lift}")
+        print("\n\tParameter training status:")
+        print(f"\t\tTrunk trainable: {any(p.requires_grad for p in model_module.trunk.parameters())}")
+        print(f"\t\tLifter trainable: {any(p.requires_grad for p in model_module.lifter.parameters())}")
+        print(f"\t\tHead trainable: {any(p.requires_grad for p in model_module.head.parameters())}")
+        
+        self.patience_counter = 0
+        self.best_val_loss = float('inf')
+        self.matching_steps = 0
+
+def compute_loss(self, y_pred, y_batch, z, target_z, alpha=0.5):
+    """Phase-specific loss computation."""
+    if self.current_phase == TrainingPhase.MATCHING:
+        match_loss = F.mse_loss(z, target_z)
+        # with torch.no_grad():
+        #     ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
+        ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
+        alpha = self.config.get('alpha', 0.5)
+        return alpha * match_loss + (1.0-alpha) * ce_loss, ce_loss, match_loss
+        # return match_loss, ce_loss, match_loss
+        
+    elif self.current_phase in [TrainingPhase.SHORTCUT, TrainingPhase.LIFTED]:
+        # bce_loss = F.binary_cross_entropy(y_pred[:, 1], y_batch[:, 1])
+        ce_loss = F.cross_entropy(y_pred, y_batch.argmax(dim=1))
+        with torch.no_grad():
+            match_loss = F.mse_loss(z, target_z)
+        # return bce_loss, bce_loss, match_loss
+        return ce_loss, ce_loss, match_loss
+
+    raise ValueError(f"Unknown phase: {self.current_phase}")
 
 class MetricsTracker:
     def __init__(self, n_folds):
@@ -258,11 +325,10 @@ class MetricsTracker:
                 self.metrics[fold][key].append(value)
 
 class ModelTrainer:
-    def __init__(self, config, model):
+    def __init__(self, config):
         self.config = config
         self.metrics_tracker = MetricsTracker(config['n_folds'])
         self.device = setup_device()
-        self.model = model
         self.lifter_config = config['model_config']['params'].get('lifter_config', {}) if 'params' in config['model_config'] else config['model_config'].get('lifter_config', {})
     
     def get_model_module(self, model=None):
@@ -332,13 +398,13 @@ class ModelTrainer:
     def _initialize_model(self, device):
         print(f"Initializing model with device: {device}")
         """Initialize model with proper device handling."""
-        if self.config['model_type'] == 'RFLiftNet':
+        if self.config['model_type'] == 'LeNetLifted':
             print(f'self.config: {self.config}')
             # Get the correct config structure
             model_config = self.config['model_config']['params'] if 'params' in self.config['model_config'] else self.config['model_config']
             print(f"Initialising model with Model config: {model_config}")
             # Create model
-            model = RFLiftNet(config=model_config)
+            model = LeNetLifted(config=model_config)
             # Initialize parameters before moving to device
             print(f'Initializing model with seed: {self.config["seed"]}')
             model._initialize_modules(seed=self.config['seed'], init_type=self.config.get('init_type', 'xavier'))
@@ -348,6 +414,33 @@ class ModelTrainer:
                 model._initialize_lifter(init_type=self.lifter_config.get('init_type', 'xavier'),
                                         sparsity=self.lifter_config.get('sparsity', 0.0),
                                         scale=self.lifter_config.get('scale', None))
+            
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            # Move to device first
+            model = model.to(device)
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            
+            # Apply DataParallel after moving to device
+            if torch.cuda.device_count() > 1:
+                model = torch.nn.DataParallel(model)
+                
+            self.model = model
+            return self.model
+        
+        if self.config['model_type'] == 'RFLiftNet':
+            print(f'self.config: {self.config}')
+            # Get the correct config structure
+            model_config = self.config['model_config']['params'] if 'params' in self.config['model_config'] else self.config['model_config']
+            print(f"Initialising model with Model config: {model_config}")
+            # Create model
+            model = RFLiftNet(config=model_config)
+            # Initialize parameters before moving to device
+            #print(f'Initializing model with seed: {self.config["seed"]}')
+            #model._initialize_modules(seed=self.config['seed'], init_type=self.config.get('init_type', 'xavier'))
+            # Initialize lifter if specified
+            #print(f'Lifter init: {self.config.get("lifter_init")}')
             
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
@@ -470,7 +563,83 @@ class ModelTrainer:
                 )
             
             # Backward pass
-            total_loss.backward()
+            total_loss.backward() # alter this for non-differentiable training, create new method
+            if device.type == 'cuda':
+                torch.cuda.synchronize() 
+            if self.config.get('gradient_clip'):
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 
+                    self.config['gradient_clip']
+                )
+            
+            current_optimizer.step()
+
+            if device.type == 'cuda':
+                torch.cuda.synchronize() 
+            
+            # Compute accuracy
+            acc = (y_pred.argmax(dim=1) == y_batch.argmax(dim=1)).float().mean()
+            
+            # Update metrics
+            metrics['loss'] += total_loss.item()
+            metrics['ce_loss'] += ce_loss.item()
+            # Handle match_loss differently based on phase
+            if isinstance(match_loss, torch.Tensor):
+                metrics['match_loss'] += match_loss.item()
+            else:
+                metrics['match_loss'] += match_loss
+            metrics['acc'] += acc.item()
+            n_batches += 1
+        
+        # Average metrics
+        return {k: v/n_batches for k, v in metrics.items()}
+
+    def _train_epoch_RF(self, model, train_loader, optimizer, training_cycle):
+        model.train()
+        model.train()
+        metrics = {
+            'loss': 0.0,
+            'ce_loss': 0.0,
+            'match_loss': 0.0,
+            'acc': 0.0
+        }
+        n_batches = 0
+        device = next(model.parameters()).device
+        model_module = self.get_model_module(model)
+
+        # print(f"\tOptimizer: {optimizer}")
+        for i, (x_batch, y_batch, target_z_batch) in enumerate(train_loader):
+            x_batch, y_batch = x_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
+            # Get optimizer based on current phase
+            if isinstance(optimizer, dict):
+                current_optimizer = optimizer['lifted'] if model_module.lift else optimizer['shortcut']
+            else:
+                current_optimizer = optimizer
+            
+            current_optimizer.zero_grad()
+            
+            # Generate target for matching if in matching phase
+            with torch.no_grad():
+                if training_cycle.current_phase == TrainingPhase.SHORTCUT or training_cycle.current_phase == TrainingPhase.LIFTED:
+                    model_module.lift = not model_module.lift
+                    _, target_z = model(x_batch)
+                    model_module.lift = not model_module.lift
+                else:
+                    target_z = target_z_batch
+            
+            # Forward pass
+            y_pred, z = model(x_batch)
+            
+            if model_module.lift:
+                resid = y_batch - y_pred
+                
+
+            total_loss, ce_loss, match_loss = training_cycle.compute_loss(
+                    y_pred, y_batch, z, target_z
+                )
+            
+            # Backward pass
+            total_loss.backward() # alter this for non-differentiable training, create new method
             if device.type == 'cuda':
                 torch.cuda.synchronize() 
             if self.config.get('gradient_clip'):
@@ -561,10 +730,8 @@ class ModelTrainer:
             val_loader = self._create_loader(X_val, y_val, self.config['batch_size'], device, shuffle=False)
             
             # Initialize model and training components
-            if self.model == None:
-                model = self._initialize_model(device)
-            else:
-                model = self.model
+            model = self._initialize_model(device)
+
             # model = setup_model(model, device)
             training_cycle = TrainingCycle(model, self.config)
             optimizer, scheduler = self._initialize_optimizer(model)
@@ -694,6 +861,7 @@ class ModelTrainer:
             
             # Initialize model and training components
             self.model = self._initialize_model(device)
+
             training_cycle = TrainingCycle(self.model, self.config)
             optimizer, scheduler = self._initialize_optimizer(self.model)
             
@@ -793,6 +961,7 @@ class ModelTrainer:
         
         # Initialize model and training components
         self.model = self._initialize_model(device)
+
         training_cycle = TrainingCycle(self.model, self.config)
         optimizer, scheduler = self._initialize_optimizer(self.model)
         
@@ -904,6 +1073,7 @@ class ModelTrainer:
         
         # Initialize model and training components
         self.model = self._initialize_model(device)
+
         training_cycle = TrainingCycle(self.model, self.config)
         print(f'DEBUG: model {self.model}')
         optimizer, scheduler = self._initialize_optimizer(self.model)
@@ -1006,6 +1176,141 @@ class ModelTrainer:
         )
 
         return self.model, self.metrics_tracker.metrics
+
+    def train_RFwith_fixed_val(self, X_train, y_train, X_test, y_test, device='cpu', val_split=0.2):
+        """Train model with a fixed validation split and test set.
+        Uses 80-20 train-val split by default, with CIFAR's fixed test set."""
+        
+        self.device = device
+        self.metrics_tracker = MetricsTracker(n_folds=1)
+        
+        # Create train-val split (80-20)
+        val_size = int(len(X_train) * val_split)
+        np.random.seed(self.config.get('seed', 42))
+        indices = np.random.permutation(len(X_train))
+        train_indices = indices[:-val_size]
+        val_indices = indices[-val_size:]
+        
+        
+        X_train_final = X_train[train_indices]
+        y_train_final = y_train[train_indices]
+        X_val = X_train[val_indices]
+        y_val = y_train[val_indices]
+        
+        # printing sizes of all datasets
+        print("Trainer v7: Train, Val, Test sizes")
+        print(f"X_train_final: {X_train_final.shape}, y_train_final: {y_train_final.shape}")
+        # Create data loaders
+        train_loader = self._create_loader(X_train_final, y_train_final, self.config['batch_size'], device)
+        val_loader = self._create_loader(X_val, y_val, self.config['batch_size'], device, shuffle=False)
+        test_loader = self._create_loader(X_test, y_test, self.config['batch_size'], device, shuffle=False)
+        
+        # Initialize model and training components
+        self.model = self._initialize_model(device)
+
+        training_cycle = TrainingCycle(self.model, self.config)
+        print(f'DEBUG: model {self.model}')
+        optimizer, scheduler = self._initialize_optimizer(self.model)
+        
+        cycle_counter = 0
+        fold = 0  # Single fold
+        
+        for epoch in tqdm(range(self.config['epochs']), desc="Training"):
+            # Training phase
+            train_metrics = self._train_epoch(
+                self.model, train_loader, optimizer, training_cycle
+            )
+            
+            # Evaluation phases
+            val_metrics = self._evaluate(self.model, val_loader, training_cycle)
+            test_metrics = self._evaluate(self.model, test_loader, training_cycle)
+            
+            if self.scheduler is not None:
+                print(f"Current LR: {optimizer.param_groups[0]['lr']:.6f}")
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_metrics['loss'])  # Use validation loss for scheduler
+                else:
+                    self.scheduler.step()
+
+            model_module = self.get_model_module()
+            
+            # Update metrics
+            self.metrics_tracker.update_metrics(
+                fold, epoch,
+                {
+                    'epoch': epoch,
+                    'phases': training_cycle.current_phase.value,
+                    'train_loss': train_metrics['loss'],
+                    'train_ce_loss': train_metrics['ce_loss'],
+                    'train_match_loss': train_metrics['match_loss'],
+                    'train_acc': train_metrics['acc'],
+                    'val_loss': val_metrics['loss'],
+                    'val_ce_loss': val_metrics['ce_loss'],
+                    'val_match_loss': val_metrics['match_loss'],
+                    'val_acc': val_metrics['acc'],
+                    'val_shortcut_acc': val_metrics['shortcut_acc'],
+                    'val_lifted_acc': val_metrics['lifted_acc'],
+                    'test_loss': test_metrics['loss'],
+                    'test_ce_loss': test_metrics['ce_loss'],
+                    'test_match_loss': test_metrics['match_loss'],
+                    'test_acc': test_metrics['acc'],
+                    'test_shortcut_acc': test_metrics['shortcut_acc'],
+                    'test_lifted_acc': test_metrics['lifted_acc']
+                },
+                {
+                    'epoch': epoch,
+                    'model_lift': model_module.lift,
+                    'patience_counter': training_cycle.patience_counter,
+                    'cycle_counter': cycle_counter
+                }
+            )
+                
+            # Check for phase transition using validation loss
+            if training_cycle.should_switch_phase(val_metrics['loss']):
+                print(f"Switching phase at epoch {epoch}")
+                print(f"\t Train loss at the end of {training_cycle.current_phase}: {train_metrics['loss']:.4f}")
+                print(f"\t Train accuracy at the end of {training_cycle.current_phase}: {train_metrics['acc']:.4f}")
+                print(f"\t Val loss at the end of {training_cycle.current_phase}: {val_metrics['loss']:.4f}")
+                print(f"\t Val accuracy at the end of {training_cycle.current_phase}: {val_metrics['acc']:.4f}")
+                print(f"\t Test loss at the end of {training_cycle.current_phase}: {test_metrics['loss']:.4f}")
+                print(f"\t Test accuracy at the end of {training_cycle.current_phase}: {test_metrics['acc']:.4f}")
+                
+                if training_cycle.current_phase == TrainingPhase.LIFTED:
+                    train_loader.dataset.update_targets(model_module)
+                    test_loader.dataset.update_targets(model_module)
+                    val_loader.dataset.update_targets(model_module)
+                elif training_cycle.current_phase == TrainingPhase.MATCHING:
+                    train_loader.dataset.reset_targets()
+                    test_loader.dataset.reset_targets()
+                    val_loader.dataset.reset_targets()
+                    cycle_counter += 1
+                    if cycle_counter >= self.config['cycles']:
+                        print(f"Completed {self.config['cycles']} cycles at epoch {epoch}")
+                        break
+                training_cycle.switch_to_next_phase()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Get final metrics
+        training_cycle.current_phase = TrainingPhase.SHORTCUT
+        model_module.lift = False
+        final_val_metrics = self._evaluate(self.model, val_loader, training_cycle)
+        final_test_metrics = self._evaluate(self.model, test_loader, training_cycle)
+        
+        self.metrics_tracker.update_metrics(
+            fold, epoch + 1,
+            {
+                'final_val_loss': final_val_metrics['loss'],
+                'final_val_acc': final_val_metrics['acc'],
+                'final_test_loss': final_test_metrics['loss'],
+                'final_test_acc': final_test_metrics['acc']
+            },
+            {}
+        )
+
+        return self.model, self.metrics_tracker.metrics
+
 
     def save_results(self, model, save_path):
         """Save model, metrics, and configuration."""
